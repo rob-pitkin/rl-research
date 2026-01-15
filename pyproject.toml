@@ -1,0 +1,18 @@
+[project]
+name = "rl-research"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "lbforaging>=2.0.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.0",
+    "pettingzoo>=1.25.0",
+    "protobuf>=6.33.3",
+    "pymongo>=4.16.0",
+    "pyyaml>=6.0.3",
+    "sacred>=0.8.7",
+    "tensorboard-logger>=0.1.0",
+    "torch>=2.9.1",
+]
