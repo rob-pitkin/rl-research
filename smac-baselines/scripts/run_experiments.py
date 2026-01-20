@@ -7,7 +7,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 def get_dir():
   script_dir = Path(__file__).parent.resolve()  # experiments/
-  project_dir = script_dir.parent                # llm-credit-assignment/
+  project_dir = script_dir.parent                # smac-baselines/
   repo_root = project_dir.parent                 # rl-research/
   epymarl_dir = repo_root / "third-party" / "epymarl"
 
@@ -18,7 +18,7 @@ def get_dir():
   print(f"EPyMARL directory: {epymarl_dir}")
   return epymarl_dir
 
-def run_experiment(config, env, env_args, t_max, seed, epymarl_dir):
+def run_experiment(config, env, map, t_max, seed, epymarl_dir):
   cmd = [
     "uv",
     "run",
@@ -27,8 +27,7 @@ def run_experiment(config, env, env_args, t_max, seed, epymarl_dir):
     f"--config={config}",
     f"--env-config={env}",
     "with",
-    f"env_args.time_limit={env_args['time_limit']}",
-    f"env_args.key={env_args['key']}",
+    f"env_args.map_name={map}",
     f"t_max={t_max}",
     f"seed={seed}"
   ]
@@ -40,7 +39,7 @@ def run_experiment(config, env, env_args, t_max, seed, epymarl_dir):
     print(f"✗ Seed {seed} failed with return code {result.returncode}")
     return False
 
-def run_multiple_seeds(config, env, env_args, t_max, seeds, epymarl_dir, parallel=1):
+def run_multiple_seeds(config, env, map, t_max, seeds, epymarl_dir, parallel=1):
   results = []
   start_time = time.time()
   if parallel == 1:
@@ -49,13 +48,13 @@ def run_multiple_seeds(config, env, env_args, t_max, seeds, epymarl_dir, paralle
       print(f"Running seed {seed}/{seeds}")
       print(f"{'='*60}\n")
 
-      success = run_experiment(config, env, env_args, t_max, seed, epymarl_dir)
+      success = run_experiment(config, env, map, t_max, seed, epymarl_dir)
       results.append((seed, success))
 
   else:
     with ProcessPoolExecutor(max_workers=parallel) as executor:
       futures = {
-        executor.submit(run_experiment, config, env, env_args, t_max, seed, epymarl_dir) : seed
+        executor.submit(run_experiment, config, env, map, t_max, seed, epymarl_dir) : seed
         for seed in range(1, seeds + 1)
       }
 
@@ -78,25 +77,18 @@ def run_multiple_seeds(config, env, env_args, t_max, seeds, epymarl_dir, paralle
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument("--config", type=str, required=True, help="Algorithm config (iql, vdn, qmix, etc.)")
-  parser.add_argument("--env", type=str, default="gymma", help="Environment type")
-  parser.add_argument("--env-key", type=str, required=True, help="Environment key")
-  parser.add_argument("--time-limit", type=int, default=50, help="Episode time limit")
+  parser.add_argument("--env", type=str, default="smaclite", help="Environment type")
+  parser.add_argument("--map", type=str, required=True, help="Map name")
   parser.add_argument("--t-max", type=int, required=True, help="Total timesteps")
   parser.add_argument("--seeds", type=int, required=True, help="Number of seeds")
   parser.add_argument("--parallel", type=int, default=1, help="Number of seeds to run in parallel")
   args = parser.parse_args()
 
-  env_args = {}
-  if args.env_key:
-    env_args["key"] = args.env_key
-  if args.time_limit:
-    env_args["time_limit"] = args.time_limit
-
-  print(f"Args: {args}, Env args: {env_args}")
+  print(f"Args: {args}")
 
   epymarl_dir = get_dir()
 
-  run_multiple_seeds(args.config, args.env, env_args, args.t_max, args.seeds, epymarl_dir, args.parallel)
+  run_multiple_seeds(args.config, args.env, args.map, args.t_max, args.seeds, epymarl_dir, args.parallel)
 
 
 

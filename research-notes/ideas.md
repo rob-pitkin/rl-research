@@ -3,45 +3,113 @@
 ## Active Ideas
 <!-- Ideas currently being explored or designed -->
 
-### 1. LLM-Based Credit Assignment in Cooperative MARL
+### 1. Emergent Communication in Cooperative MARL
 
-**Core Idea**: Use small language models (SLMs) to assign credit in multi-agent environments with shared/common rewards. LLMs can reason about "who contributed what" by analyzing trajectory descriptions.
+**Core Idea**: Study how agents learn to coordinate through communication in cooperative tasks. Investigate emergent communication protocols, when agents choose to communicate, and what information they transmit.
 
-**Research Question**: Can LLMs provide effective credit assignment signals in cooperative MARL tasks with sparse shared rewards? How does this compare to traditional credit assignment methods?
+**Research Question**: How does adding communication channels affect multi-agent coordination? What communication protocols emerge? Can we interpret what agents are "saying" to each other?
 
 **Environment**:
-- Level-Based Foraging (LBF) - preferred for simplicity
-- Multi-agent Particle Environment (MPE) - alternative
-- Custom gridworld - fallback option
-- Key requirement: deterministic translation from (s,a,r,s') to natural language and back
+- Level-Based Foraging (LBF) - already set up
+- Simple cooperative tasks where communication could help
 
 **Technical Approach**:
-- Use local SLMs (Llama 3.2 1B/3B, Phi-3 Mini) to keep compute tractable
-- Query LLM episodically (every N episodes or post-hoc) rather than every step
-- Convert trajectories to natural language descriptions
-- LLM outputs credit scores or natural language explanations
-- Use as auxiliary reward signal or for hindsight analysis
+- Baseline: Agents with no communication
+- Experiment 1: Discrete message passing (small vocabulary of tokens)
+- Experiment 2: Continuous communication channel
+- Analyze when/why agents communicate
+- Visualize communication patterns and emergent protocols
 
 **Baselines to Compare**:
-- COMA (Counterfactual Multi-Agent Policy Gradients)
-- QMIX
-- QPLEX
-- VDN (Value Decomposition Networks)
-- IQL (Independent Q-Learning)
+- No communication (IQL, VDN)
+- CommNet or similar architectures
+- Hand-designed communication protocols
 
-**Why It's Novel**: SIMA 2 uses LLMs for hindsight relabeling in single-agent RL, but multi-agent credit assignment is unexplored. Interpretability is a major benefit.
+**Why It's Interesting**:
+- Communication is understudied in MARL
+- Interpretability: can visualize what agents communicate
+- Practical: understanding coordination without explicit design
+- Great for blog posts (visual, intuitive results)
 
-**Compute Feasibility**: ✅ Small SLMs, simple gridworlds, episodic queries
+**Compute Feasibility**: ✅ Very feasible - same setup as current work, just add communication layer
 
 **Next Steps**:
-1. Set up LBF environment and baseline agents
-2. Implement trajectory → text translation
-3. Test SLM credit assignment on simple scenarios
-4. Compare learning curves against baselines
+1. Implement simple message-passing in EPyMARL
+2. Add communication channel to agent architecture
+3. Train with/without communication on LBF
+4. Visualize communication patterns
+5. Write blog post with findings
+
+**Blog Post Ideas**:
+- "What Do MARL Agents Say to Each Other? Visualizing Emergent Communication"
+- "Do RL Agents Need to Talk? Communication in Cooperative Foraging"
 
 ---
 
-### 2. Transformer-Based Agents in SMACLite with Attention Analysis
+### 2. Counterfactual PPO (CPPO) - Combining COMA with PPO Trust Regions
+
+**Core Idea**: Combine COMA's counterfactual advantage estimation with PPO's clipped objective for better credit assignment AND sample efficiency in cooperative MARL.
+
+**Research Question**: Does combining COMA's explicit counterfactual credit assignment with PPO's trust region optimization outperform existing methods (MAPPO, COMA) on tasks requiring fine-grained credit assignment?
+
+**Motivation**:
+- COMA has explicit credit assignment (counterfactual advantages) but uses vanilla policy gradients → less stable/sample-efficient
+- MAPPO has PPO stability but uses standard advantages → implicit credit assignment only
+- HAPPO/PRD-MAPPO improve on MAPPO but still don't use counterfactual baselines
+- CGRPA (2025) combines counterfactual + curriculum learning, but clean COMA+PPO combo isn't well-explored
+
+**Environment**:
+- SMACLite (2s3z, 3s5z) - standard benchmark, direct comparison to other work
+- Level-Based Foraging - already familiar, clear credit assignment challenges
+- Multi-Agent MuJoCo (if time) - continuous control setting
+
+**Technical Approach**:
+1. Start with EPyMARL's COMA implementation
+2. Keep counterfactual advantage computation identical
+3. Replace vanilla policy gradient update with PPO's clipped surrogate objective
+4. Add importance sampling ratio and PPO hyperparameters
+
+**Baselines to Compare**:
+- COMA (counterfactual + vanilla PG)
+- MAPPO (standard advantages + PPO)
+- QMIX (value decomposition baseline)
+- IQL (independent learning baseline)
+
+**Hypothesis**:
+- CPPO > COMA on sample efficiency and stability (PPO benefits)
+- CPPO > MAPPO on tasks with clear differential agent contributions (counterfactual benefits)
+- CPPO ≈ MAPPO on simpler tasks where implicit credit assignment suffices
+
+**Why It's Interesting**:
+- Addresses gap between credit assignment (COMA) and sample efficiency (MAPPO)
+- Clean algorithmic contribution (well-motivated combination)
+- Systematic analysis of when explicit credit assignment matters
+- Recent CGRPA (2025) validates counterfactual+PPO direction, but focuses on curriculum learning
+
+**Compute Feasibility**: ✅ Very feasible - same compute as COMA/MAPPO baselines, SMACLite designed for limited resources
+
+**Novelty Check**:
+- Need to read CGRPA paper carefully to understand overlap
+- CGRPA uses group relative policy optimization + curriculum learning
+- Our approach: vanilla COMA counterfactual + vanilla PPO clipping (simpler, cleaner baseline)
+
+**Next Steps**:
+1. Read CGRPA paper to assess novelty and differentiation
+2. Read COMA paper for deep understanding of counterfactual advantages
+3. Read MAPPO paper for SOTA baseline understanding
+4. Fill out literature review template
+5. Implement CPPO by modifying EPyMARL's COMA
+6. Run experiments on SMACLite and LBF
+7. Write blog post with findings
+
+**Blog Post Ideas**:
+- "Counterfactual PPO: The Missing Link Between COMA and MAPPO"
+- "When Does Explicit Credit Assignment Matter in MARL?"
+- "Combining the Best of COMA and PPO for Multi-Agent Credit Assignment"
+
+---
+
+### 3. Transformer-Based Agents in SMACLite with Attention Analysis
 
 **Core Idea**: Replace RNN/LSTM/GRU components in MARL algorithms with transformers, focusing on interpretability - what do agents attend to during cooperation?
 
@@ -84,15 +152,7 @@
 ## Potential Ideas
 <!-- Ideas to explore further -->
 
-### 3. Communication Protocols in MARL
-**Idea**: Study learned vs hand-crafted communication protocols in cooperative tasks. When do agents learn to communicate effectively? Can we use attention as implicit communication?
-
-**Compute**: ✅ Feasible with simple environments (PettingZoo)
-**Novelty**: Moderate - communication is well-studied but specific protocols/analysis could be interesting
-
----
-
-### 4. Zero-Shot Coordination
+### 3. Zero-Shot Coordination
 **Idea**: Train agents independently (self-play or with different training partners), then test if they can cooperate zero-shot with never-seen partners.
 
 **Compute**: ✅ Very feasible - training is parallelizable
@@ -101,7 +161,7 @@
 
 ---
 
-### 5. Curriculum Learning for MARL
+### 4. Curriculum Learning for MARL
 **Idea**: Design curriculum for progressively harder cooperative scenarios. Study how curriculum design affects final performance and sample efficiency.
 
 **Compute**: ✅ Feasible
@@ -110,7 +170,7 @@
 
 ---
 
-### 6. Sample Efficiency in MARL
+### 5. Sample Efficiency in MARL
 **Idea**: Improve sample efficiency through offline MARL, better experience replay, or auxiliary tasks. Compare different replay strategies.
 
 **Compute**: ✅ Feasible - actually reduces compute needs
@@ -119,7 +179,7 @@
 
 ---
 
-### 7. Partial Observability Studies
+### 6. Partial Observability Studies
 **Idea**: Systematic study of how observation radius/partial observability affects learning, cooperation, and final strategies. What's the minimum info agents need to cooperate?
 
 **Compute**: ✅ Very feasible
@@ -261,6 +321,46 @@ If recursive LMs can help with credit assignment over episodes (current project)
 
 ## Parked Ideas
 <!-- Interesting but not feasible right now or deprioritized -->
+
+### LLM-Based Credit Assignment in Cooperative MARL
+
+**Status**: Parked due to compute constraints and inference latency issues
+
+**Core Idea**: Use small language models (SLMs) to assign credit in multi-agent environments with shared/common rewards. LLMs can reason about "who contributed what" by analyzing trajectory descriptions.
+
+**Research Question**: Can LLMs provide effective credit assignment signals in cooperative MARL tasks with sparse shared rewards? How does this compare to traditional credit assignment methods?
+
+**Environment**:
+- Level-Based Foraging (LBF) - preferred for simplicity
+- Multi-agent Particle Environment (MPE) - alternative
+- Custom gridworld - fallback option
+- Key requirement: deterministic translation from (s,a,r,s') to natural language and back
+
+**Technical Approach**:
+- Use local SLMs (Llama 3.2 1B/3B, Phi-3 Mini) to keep compute tractable
+- Query LLM episodically (every N episodes or post-hoc) rather than every step
+- Convert trajectories to natural language descriptions
+- LLM outputs credit scores or natural language explanations
+- Use as auxiliary reward signal or for hindsight analysis
+
+**Baselines to Compare**:
+- COMA (Counterfactual Multi-Agent Policy Gradients)
+- QMIX
+- QPLEX
+- VDN (Value Decomposition Networks)
+- IQL (Independent Q-Learning)
+
+**Why It's Novel**: SIMA 2 uses LLMs for hindsight relabeling in single-agent RL, but multi-agent credit assignment is unexplored. Interpretability is a major benefit.
+
+**Compute Feasibility**: ✅ Small SLMs, simple gridworlds, episodic queries
+
+**Next Steps**:
+1. Set up LBF environment and baseline agents
+2. Implement trajectory → text translation
+3. Test SLM credit assignment on simple scenarios
+4. Compare learning curves against baselines
+
+---
 
 ### AlphaZero-Style Self-Play for Chess/Board Games
 **Why Parked**: High compute requirements even for small games. Great learning project but less novel. Could revisit with better compute or after other projects.
