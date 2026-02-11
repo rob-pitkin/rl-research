@@ -1,9 +1,41 @@
 # LLM-Based Credit Assignment in Cooperative MARL
 
-**Project Status**: Planning (Week 1)
+**Project Status**: PAUSED (Hardware Constraints)
 **Start Date**: January 6, 2026
+**Pause Date**: February 2, 2026
 **Environment**: Level-Based Foraging (LBF)
 **Framework**: PettingZoo + PyTorch
+
+---
+
+## Why Paused
+
+After setting up infrastructure and running baseline experiments, paused due to hardware limitations:
+
+**LLM Inference Latency on M1 MacBook Pro:**
+- Even small language models (Gemma 1B, Llama 3.2 1B/3B) have significant inference latency on M1
+- Querying LLM episodically would slow down training substantially
+- Training 500k timesteps already takes hours; adding LLM queries would make experiments impractical
+- Could potentially work with cloud GPU/Colab, but defeats purpose of compute-constrained independent research
+
+**What Was Accomplished:**
+- ✅ Literature review (COMA, QMIX, VDN, SIMA 2)
+- ✅ LBF environment setup and exploration
+- ✅ Trajectory→text translation implementation
+- ✅ EPyMARL integration for baselines
+- ✅ Multi-seed experiment runner
+- ✅ IQL baseline experiments
+- ✅ LLM integration design decisions
+
+**Learning:**
+- Infrastructure and experimental design skills transferred to other projects
+- Deeper understanding of credit assignment methods
+- Realistic assessment of compute constraints for LLM-RL integration
+
+**Potential Future Directions:**
+- Revisit with cloud compute if available
+- Try distilled models or quantized LLMs for lower latency
+- Focus on post-hoc analysis rather than training-time credit assignment
 
 ---
 

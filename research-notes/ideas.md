@@ -5,6 +5,8 @@
 
 ### 1. Emergent Communication in Cooperative MARL
 
+**Current Status**: Starting literature review (Feb 2026)
+
 **Core Idea**: Study how agents learn to coordinate through communication in cooperative tasks. Investigate emergent communication protocols, when agents choose to communicate, and what information they transmit.
 
 **Research Question**: How does adding communication channels affect multi-agent coordination? What communication protocols emerge? Can we interpret what agents are "saying" to each other?
@@ -47,6 +49,10 @@
 ---
 
 ### 2. Counterfactual PPO (CPPO) - Combining COMA with PPO Trust Regions
+
+**Status**: COMPLETED - Negative Result (Feb 2026)
+
+**Conclusion**: PPO clipping is fundamentally incompatible with counterfactual advantages. Policy-dependent baselines shift as the policy changes, breaking PPO's assumptions. Extensive testing with 1-step TD, target networks, double Q-learning, and various hyperparameters all resulted in entropy collapse and poor performance. Without PPO clipping, the algorithm reduces to COMA. See `research-notes/cppo-implementation-plan.md` for details.
 
 **Core Idea**: Combine COMA's counterfactual advantage estimation with PPO's clipped objective for better credit assignment AND sample efficiency in cooperative MARL.
 
@@ -324,7 +330,9 @@ If recursive LMs can help with credit assignment over episodes (current project)
 
 ### LLM-Based Credit Assignment in Cooperative MARL
 
-**Status**: Parked due to compute constraints and inference latency issues
+**Status**: PAUSED (Feb 2026) - Hardware constraints (M1 MacBook Pro)
+
+**Why Paused**: LLM inference latency makes training impractical on M1. Even small models (Gemma 1B, Llama 3.2 1B/3B) have significant per-query latency. Training already takes hours; adding episodic LLM queries would make experiments unfeasible for independent research without cloud compute.
 
 **Core Idea**: Use small language models (SLMs) to assign credit in multi-agent environments with shared/common rewards. LLMs can reason about "who contributed what" by analyzing trajectory descriptions.
 
