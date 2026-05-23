@@ -15,6 +15,8 @@ def get_config():
     # Environment args
     parser.add_argument('--env_name', type=str, default='simple_reference', help='MPE environment')
     parser.add_argument('--mask_communication', action='store_true', help='Mask communication for no-comm baseline')
+    parser.add_argument('--no_obs_agent_id', action='store_true', help='Disable one-hot agent ID in observations')
+    parser.add_argument('--no_standardise_rewards', action='store_true', help='Disable running mean/std reward standardisation')
 
     # Algorithm args
     parser.add_argument('--algorithm', type=str, default='iql', choices=['iql', 'vdn'], help='Algorithm to use')
@@ -36,7 +38,7 @@ def get_config():
     parser.add_argument('--epsilon_anneal_time', type=int, default=500000, help='Timesteps to anneal epsilon')
 
     # Target network args
-    parser.add_argument('--target_update_freq', type=int, default=200, help='Target network update frequency (episodes)')
+    parser.add_argument('--target_update_freq', type=int, default=5000, help='Target network update frequency (timesteps)')
 
     # Evaluation args
     parser.add_argument('--num_eval_episodes', type=int, default=10, help='Number of episodes for evaluation')
@@ -49,6 +51,8 @@ def get_config():
     parser.add_argument('--seed', type=int, default=1, help='Random seed')
 
     args = parser.parse_args()
+    args.obs_agent_id = not args.no_obs_agent_id
+    args.standardise_rewards = not args.no_standardise_rewards
     return args
 
 
@@ -79,7 +83,8 @@ def collect_episode(env, agent, epsilon, max_steps):
     actions_buffer = []
     rewards_buffer = []
     next_obs_buffer = []
-    dones_buffer = []
+    terminated_buffer = []
+    truncated_buffer = []
     hidden_states_buffer = []
 
 
@@ -98,14 +103,15 @@ def collect_episode(env, agent, epsilon, max_steps):
             new_hidden_states.append(new_h)
 
         # Take action
-        next_obs_list, reward_list, done_list, info_list = env.step(actions)
+        next_obs_list, reward_list, terminated_list, truncated_list, info_list = env.step(actions)
 
         # Store transistion
         obs_buffer.append(obs_list)
         actions_buffer.append(actions)
         rewards_buffer.append(reward_list)
         next_obs_buffer.append(next_obs_list)
-        dones_buffer.append(done_list)
+        terminated_buffer.append(terminated_list)
+        truncated_buffer.append(truncated_list)
         hidden_states_buffer.append(hidden_states)
 
         # Track episode reward
@@ -115,7 +121,7 @@ def collect_episode(env, agent, epsilon, max_steps):
         obs_list = next_obs_list
         hidden_states = new_hidden_states
 
-        if any(done_list):
+        if any(terminated_list) or any(truncated_list):
             break
 
     episode_data = {
@@ -123,7 +129,8 @@ def collect_episode(env, agent, epsilon, max_steps):
         'actions': np.array(actions_buffer),
         'rewards': np.array(rewards_buffer),
         'next_obs': np.array(next_obs_buffer),
-        'dones': np.array(dones_buffer),
+        'terminated': np.array(terminated_buffer),
+        'truncated': np.array(truncated_buffer),
         'hidden_states': np.array(hidden_states_buffer),
     }
 
@@ -162,7 +169,10 @@ def main():
     print(f"Training {args.algorithm} on {args.env_name}, mask_comm={args.mask_communication}, seed={args.seed}")
 
     # Initialize environment
-    env = SimpleReferenceWrapper(mask_communication=args.mask_communication)
+    env = SimpleReferenceWrapper(
+        mask_communication=args.mask_communication,
+        obs_agent_id=args.obs_agent_id,
+    )
     obs_dim = env.get_obs_dim()
     action_dims = env.get_action_dim()
     epsilon = args.epsilon_start
@@ -178,6 +188,8 @@ def main():
             gamma=args.gamma,
             epsilon_start=args.epsilon_start,
             epsilon_end=args.epsilon_end,
+            num_agents=env.num_agents,
+            standardise_rewards=args.standardise_rewards,
         )
     elif args.algorithm == 'vdn':
       agent = VDNAgent(
@@ -189,6 +201,8 @@ def main():
           gamma=args.gamma,
           epsilon_start=args.epsilon_start,
           epsilon_end=args.epsilon_end,
+          num_agents=env.num_agents,
+          standardise_rewards=args.standardise_rewards,
       )
 
     # Initialize buffer
@@ -198,7 +212,7 @@ def main():
     if (args.use_wandb):
         wandb.init(
             project=args.wandb_project,
-            name=f"{args.algorithm}_{args.experiment_name}_seed{args.seed}",
+            name=args.experiment_name,
             config=vars(args)
         )
 

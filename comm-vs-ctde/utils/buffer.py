@@ -7,14 +7,15 @@ class EpisodeReplayBuffer:
         self.buffer = deque()
         self.max_capacity = max_capacity
 
-    def add_episode(self, obs, actions, rewards, next_obs, dones, hidden_states):
+    def add_episode(self, obs, actions, rewards, next_obs, terminated, truncated, hidden_states):
         episode = {
             "obs": obs, # (episode_len, num_agents, obs_dim)
             "actions": actions, # (episode_len, num_agents, action_dim)
-            "rewards": rewards, # (episode_len, num_agents, 1)
+            "rewards": rewards, # (episode_len, num_agents)
             "next_obs": next_obs, # (episode_len, num_agents, obs_dim)
-            "dones": dones, # (episode_len, num_agents, 1)
-            "hidden_states": hidden_states, # (episode_len, num_agents, rnn_hidden_dim)
+            "terminated": terminated, # (episode_len, num_agents) - true terminal
+            "truncated": truncated, # (episode_len, num_agents) - time limit
+            "hidden_states": hidden_states, # (episode_len, num_agents, num_layers, rnn_hidden_dim)
         }
         self.buffer.appendleft(episode)
         if len(self.buffer) > self.max_capacity:

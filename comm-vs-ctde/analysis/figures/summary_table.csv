@@ -1,0 +1,5 @@
+algo,comm,n_seeds,mean,sem,ci95_half,min_seed,max_seed
+iql,no_comm,5,-44.42,0.7,1.95,-46.95,-43.14
+iql,with_comm,5,-47.37,3.41,9.46,-60.92,-42.83
+vdn,no_comm,5,-40.43,1.09,3.02,-43.33,-37.4
+vdn,with_comm,5,-38.66,1.13,3.13,-41.73,-36.46

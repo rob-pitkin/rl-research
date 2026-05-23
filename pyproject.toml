@@ -26,4 +26,13 @@ dependencies = [
     "gym>=0.26.2",
     "tensorboardx>=2.6.4",
     "mpe2>=0.0.1",
+    "cpp-mpe2",
 ]
+
+[tool.uv.workspace]
+members = [
+    "cpp-mpe2",
+]
+
+[tool.uv.sources]
+cpp-mpe2 = { workspace = true }

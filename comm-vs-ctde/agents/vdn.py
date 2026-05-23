@@ -1,10 +1,12 @@
 import torch
 from .networks import QNetwork
+from utils.running_mean_std import RunningMeanStd
 import random
 
 
 class VDNAgent:
-    def __init__(self, obs_dim, action_dims, hidden_dim, rnn_hidden_dim, lr, gamma, epsilon_start, epsilon_end):
+    def __init__(self, obs_dim, action_dims, hidden_dim, rnn_hidden_dim, lr, gamma, epsilon_start, epsilon_end,
+                 num_agents=2, standardise_rewards=True):
         self.obs_dim = obs_dim
         self.action_dims = action_dims
         self.hidden_dim = hidden_dim
@@ -13,6 +15,8 @@ class VDNAgent:
         self.gamma = gamma
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
+        self.num_agents = num_agents
+        self.standardise_rewards = standardise_rewards
 
         self.q_network = QNetwork(obs_dim, action_dims, hidden_dim, rnn_hidden_dim)
         self.target_network = QNetwork(obs_dim, action_dims, hidden_dim, rnn_hidden_dim)
@@ -20,6 +24,8 @@ class VDNAgent:
         self.target_network.eval()
         self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=self.lr)
         self.epsilon = epsilon_start
+        if self.standardise_rewards:
+            self.rew_ms = RunningMeanStd(shape=(self.num_agents,))
 
     def select_action(self, obs, hidden_state, epsilon):
         if random.random() < epsilon:
@@ -34,93 +40,86 @@ class VDNAgent:
                 actions = [torch.argmax(q_vals, dim=-1).item() for q_vals in q_values]
                 return actions, new_hidden_state.squeeze(1).numpy() # back to (num_layers, rnn_hidden_state_dim)
 
-    # TODO: Potentially handle entire batch at once if training is slow
     def train(self, batch):
         """
-        batch: list of episodes from replay buffer
-        Each episode: {'obs', 'actions', 'rewards', 'next_obs', 'dones', 'hidden_states'}
+        VDN with recurrent unroll. Each agent's full episode is one GRU
+        sequence. After computing per-agent Q, sum across agents (the VDN
+        mixer) to get Q_tot, fit against the team-summed reward.
         """
         total_loss = 0
-        # For each episode in batch:
+        last_mov_q_tot = last_com_q_tot = None
         for episode in batch:
-            obs = torch.FloatTensor(episode['obs'])  # (ep_len, num_agents, obs_dim)
+            obs = torch.FloatTensor(episode['obs'])
             actions = torch.LongTensor(episode['actions'])
-            rewards = torch.FloatTensor(episode['rewards']).unsqueeze(-1)
+            rewards = torch.FloatTensor(episode['rewards'])  # (T, N)
+            if self.standardise_rewards:
+                self.rew_ms.update(rewards)
+                rewards = (rewards - self.rew_ms.mean) / torch.sqrt(self.rew_ms.var + 1e-8)
             next_obs = torch.FloatTensor(episode['next_obs'])
-            dones = torch.FloatTensor(episode['dones']).unsqueeze(-1)
-            hidden_states = torch.FloatTensor(episode['hidden_states'])
+            terminated = torch.FloatTensor(episode['terminated'])  # (T, N)
 
-            # Stack agents into batch dimension: (ep_len, num_agents, obs_dim) -> (ep_len * num_agents, obs_dim)
-            ep_len, num_agents, obs_dim = obs.shape
-            obs_stacked = obs.reshape(ep_len * num_agents, obs_dim).unsqueeze(1)  # (ep_len*num_agents, 1, obs_dim)
-            next_obs_stacked = next_obs.reshape(ep_len * num_agents, obs_dim).unsqueeze(1)
+            T, N, obs_dim = obs.shape
+            obs_seq = obs.permute(1, 0, 2)            # (N, T, obs_dim)
+            next_obs_seq = next_obs.permute(1, 0, 2)
+            h0 = self.q_network.init_hidden(N)
 
-            # Expand hidden states to match stacked batch size
-            # (num_agents, num_layers, hidden_dim) -> (num_layers, num_agents, hidden_dim) -> (num_layers, ep_len*num_agents, hidden_dim)
-            init_hidden_per_agent = hidden_states[0].permute(1, 0, 2)  # (1, num_agents, 64)
-            init_hidden = init_hidden_per_agent.repeat(1, ep_len, 1)  # (1, ep_len*num_agents, 64)
+            online_mov_seq, online_com_seq = self._forward_seq(self.q_network, obs_seq, h0)
+            online_mov_q = online_mov_seq.permute(1, 0, 2)   # (T, N, 5)
+            online_com_q = online_com_seq.permute(1, 0, 2)
 
-            # Forward pass for all agents at once
-            q_values, _ = self.q_network(obs_stacked, init_hidden)
-            # q_values[0]: (ep_len*num_agents, 1, 5), q_values[1]: (ep_len*num_agents, 1, 10)
+            mov_a = actions[:, :, 0].unsqueeze(-1)
+            com_a = actions[:, :, 1].unsqueeze(-1)
+            chosen_mov_q = online_mov_q.gather(2, mov_a)     # (T, N, 1)
+            chosen_com_q = online_com_q.gather(2, com_a)
 
-            # Reshape back: (ep_len*num_agents, 1, action_dim) -> (ep_len, num_agents, action_dim)
-            movement_q_values = q_values[0].squeeze(1).reshape(ep_len, num_agents, -1)
-            comm_q_values = q_values[1].squeeze(1).reshape(ep_len, num_agents, -1)
-            # (ep_len, num_agents, 1)
-            movement_actions = (actions[:, :, 0]).unsqueeze(-1)
-            # (ep_len, num_agents, 1)
-            comm_actions = (actions[:, :, 1]).unsqueeze(-1)
-            # (ep_len, num_agents, 1)
-            movement_q_values = torch.gather(movement_q_values, dim=2, index=movement_actions)
-            # Sum movement Q values across agent dim
-            movement_q_total = movement_q_values.sum(dim=1, keepdim=True)
-            # (ep_len, num_agents, 1)
-            comm_q_values = torch.gather(comm_q_values, dim=2, index=comm_actions)
-            # Sum comm Q values across agent dim
-            comm_q_total = comm_q_values.sum(dim=1, keepdim=True)
-            # compute target q-values
+            # VDN mix: sum across agent dim → (T, 1, 1)
+            mov_q_tot = chosen_mov_q.sum(dim=1, keepdim=True)
+            com_q_tot = chosen_com_q.sum(dim=1, keepdim=True)
+
             with torch.no_grad():
-                # Double Q-Learning: use Q-network to select actions, target network to evaluate
-                next_q_values, _ = self.q_network(next_obs_stacked, init_hidden)
-                target_q_values, _ = self.target_network(next_obs_stacked, init_hidden)
+                online_mov_next, online_com_next = self._forward_seq(self.q_network, next_obs_seq, h0)
+                target_mov_next, target_com_next = self._forward_seq(self.target_network, next_obs_seq, h0)
+                online_mov_next = online_mov_next.permute(1, 0, 2)
+                online_com_next = online_com_next.permute(1, 0, 2)
+                target_mov_next = target_mov_next.permute(1, 0, 2)
+                target_com_next = target_com_next.permute(1, 0, 2)
 
-                # Reshape: (ep_len*num_agents, 1, action_dim) -> (ep_len, num_agents, action_dim)
-                movement_next_q_values = next_q_values[0].squeeze(1).reshape(ep_len, num_agents, -1)
-                comm_next_q_values = next_q_values[1].squeeze(1).reshape(ep_len, num_agents, -1)
-                movement_target_q_values = target_q_values[0].squeeze(1).reshape(ep_len, num_agents, -1)
-                comm_target_q_values = target_q_values[1].squeeze(1).reshape(ep_len, num_agents, -1)
+                best_mov = online_mov_next.argmax(dim=2, keepdim=True)
+                best_com = online_com_next.argmax(dim=2, keepdim=True)
+                tgt_mov_q = target_mov_next.gather(2, best_mov)   # (T, N, 1)
+                tgt_com_q = target_com_next.gather(2, best_com)
 
-                # Select best actions from Q-network
-                best_movement_actions = torch.argmax(movement_next_q_values, dim=2).unsqueeze(-1)
-                best_comm_actions = torch.argmax(comm_next_q_values, dim=2).unsqueeze(-1)
-                # (ep_len, num_agents, 1)
-                target_movement_q_values = torch.gather(movement_target_q_values, dim=2, index=best_movement_actions)
-                target_movement_q_values = target_movement_q_values * (1 - dones)
-                # Sum target movement Q values across agent dim
-                target_movement_q_total = target_movement_q_values.sum(dim=1, keepdim=True)
-                # (ep_len, num_agents, 1)
-                target_comm_q_values = torch.gather(comm_target_q_values, dim=2, index=best_comm_actions)
-                target_comm_q_values = target_comm_q_values * (1 - dones)
-                # Sum target comm Q values across agent dim
-                target_comm_q_total = target_comm_q_values.sum(dim=1, keepdim=True)
-            # compute team rewards (sum across agent dim)
-            team_rewards = rewards.sum(dim=1, keepdim=True)
-            # compute TD-error/loss (MSE)
-            episode_loss = torch.nn.functional.mse_loss(movement_q_total, team_rewards + self.gamma * target_movement_q_total) + \
-                torch.nn.functional.mse_loss(comm_q_total, team_rewards + self.gamma * target_comm_q_total)
-            total_loss += episode_loss
+                not_terminal = (1.0 - terminated).unsqueeze(-1)   # (T, N, 1)
+                tgt_mov_q = tgt_mov_q * not_terminal
+                tgt_com_q = tgt_com_q * not_terminal
 
-        # backprop and update Q-network
+                # VDN mix on the target side too
+                tgt_mov_q_tot = tgt_mov_q.sum(dim=1, keepdim=True)
+                tgt_com_q_tot = tgt_com_q.sum(dim=1, keepdim=True)
+
+                team_rewards = rewards.sum(dim=1, keepdim=True).unsqueeze(-1)  # (T, 1, 1)
+                target_mov_full = team_rewards + self.gamma * tgt_mov_q_tot
+                target_com_full = team_rewards + self.gamma * tgt_com_q_tot
+
+            ep_loss = torch.nn.functional.mse_loss(mov_q_tot, target_mov_full) + \
+                      torch.nn.functional.mse_loss(com_q_tot, target_com_full)
+            total_loss += ep_loss
+            last_mov_q_tot, last_com_q_tot = mov_q_tot, com_q_tot
+
+        loss = total_loss / len(batch)
         self.optimizer.zero_grad()
-        total_loss.backward()
+        loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=10.0)
         self.optimizer.step()
 
-        # Compute mean Q-values for logging (from last episode in batch)
-        mean_q_tot = (movement_q_total.mean() + comm_q_total.mean()).item() / 2
+        mean_q_tot = (last_mov_q_tot.mean() + last_com_q_tot.mean()).item() / 2
+        return loss.item(), grad_norm.item(), mean_q_tot
 
-        return total_loss.item() / len(batch), grad_norm.item(), mean_q_tot
+    @staticmethod
+    def _forward_seq(net, obs_seq, h0):
+        gru_out, _ = net.rnn(obs_seq, h0)
+        q_heads = [head(gru_out) for head in net.q_heads]
+        return q_heads[0], q_heads[1]
 
     def update_target_network(self):
         self.target_network.load_state_dict(self.q_network.state_dict())

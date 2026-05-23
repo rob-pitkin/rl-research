@@ -1,10 +1,12 @@
 import torch
 from .networks import QNetwork
+from utils.running_mean_std import RunningMeanStd
 import random
 
 
 class IQLAgent:
-    def __init__(self, obs_dim, action_dims, hidden_dim, rnn_hidden_dim, lr, gamma, epsilon_start, epsilon_end):
+    def __init__(self, obs_dim, action_dims, hidden_dim, rnn_hidden_dim, lr, gamma, epsilon_start, epsilon_end,
+                 num_agents=2, standardise_rewards=True):
         self.obs_dim = obs_dim
         self.action_dims = action_dims
         self.hidden_dim = hidden_dim
@@ -13,6 +15,8 @@ class IQLAgent:
         self.gamma = gamma
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
+        self.num_agents = num_agents
+        self.standardise_rewards = standardise_rewards
 
         self.q_network = QNetwork(obs_dim, action_dims, hidden_dim, rnn_hidden_dim)
         self.target_network = QNetwork(obs_dim, action_dims, hidden_dim, rnn_hidden_dim)
@@ -20,6 +24,8 @@ class IQLAgent:
         self.target_network.eval()
         self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=self.lr)
         self.epsilon = epsilon_start
+        if self.standardise_rewards:
+            self.rew_ms = RunningMeanStd(shape=(self.num_agents,))
 
     def select_action(self, obs, hidden_state, epsilon):
         if random.random() < epsilon:
@@ -34,83 +40,105 @@ class IQLAgent:
                 actions = [torch.argmax(q_vals, dim=-1).item() for q_vals in q_values]
                 return actions, new_hidden_state.squeeze(1).numpy() # back to (num_layers, rnn_hidden_state_dim)
 
-    # TODO: Potentially handle entire batch at once if training is slow
     def train(self, batch):
         """
         batch: list of episodes from replay buffer
-        Each episode: {'obs', 'actions', 'rewards', 'next_obs', 'dones', 'hidden_states'}
+        Each episode: {'obs', 'actions', 'rewards', 'next_obs', 'terminated', 'truncated', 'hidden_states'}
+
+        Recurrent unroll: each agent's full episode is one GRU sequence
+        (batch_size_seq = num_agents, seq_len = ep_len). Hidden state flows
+        across timesteps so the GRU actually integrates history.
         """
         total_loss = 0
-        # For each episode in batch:
+        last_mov_q = last_com_q = None
         for episode in batch:
-            obs = torch.FloatTensor(episode['obs'])  # (ep_len, num_agents, obs_dim)
-            actions = torch.LongTensor(episode['actions'])
-            rewards = torch.FloatTensor(episode['rewards']).unsqueeze(-1)
-            next_obs = torch.FloatTensor(episode['next_obs'])
-            dones = torch.FloatTensor(episode['dones']).unsqueeze(-1)
-            hidden_states = torch.FloatTensor(episode['hidden_states'])
+            obs = torch.FloatTensor(episode['obs'])           # (T, N, obs_dim)
+            actions = torch.LongTensor(episode['actions'])    # (T, N, 2)
+            rewards = torch.FloatTensor(episode['rewards'])   # (T, N)
+            if self.standardise_rewards:
+                self.rew_ms.update(rewards)
+                rewards = (rewards - self.rew_ms.mean) / torch.sqrt(self.rew_ms.var + 1e-8)
+            next_obs = torch.FloatTensor(episode['next_obs']) # (T, N, obs_dim)
+            terminated = torch.FloatTensor(episode['terminated'])  # (T, N)
+            # NOTE: truncated is intentionally unused in the Bellman mask.
+            # Time-limit truncation is NOT a real terminal — we should still
+            # bootstrap Q(s_T, ·) rather than treat it as 0.
 
-            # Stack agents into batch dimension: (ep_len, num_agents, obs_dim) -> (ep_len * num_agents, obs_dim)
-            ep_len, num_agents, obs_dim = obs.shape
-            obs_stacked = obs.reshape(ep_len * num_agents, obs_dim).unsqueeze(1)  # (ep_len*num_agents, 1, obs_dim)
-            next_obs_stacked = next_obs.reshape(ep_len * num_agents, obs_dim).unsqueeze(1)
+            T, N, obs_dim = obs.shape
 
-            # Expand hidden states to match stacked batch size
-            # (num_agents, num_layers, hidden_dim) -> (num_layers, num_agents, hidden_dim) -> (num_layers, ep_len*num_agents, hidden_dim)
-            init_hidden_per_agent = hidden_states[0].permute(1, 0, 2)  # (1, num_agents, 64)
-            init_hidden = init_hidden_per_agent.repeat(1, ep_len, 1)  # (1, ep_len*num_agents, 64)
+            # GRU expects (batch=N, seq=T, obs_dim). Permute time-then-agent
+            # data into agent-then-time so each agent is one sequence.
+            obs_seq = obs.permute(1, 0, 2)              # (N, T, obs_dim)
+            next_obs_seq = next_obs.permute(1, 0, 2)    # (N, T, obs_dim)
+            # Fresh zero hidden state at the start of every replayed episode.
+            h0 = self.q_network.init_hidden(N)          # (1, N, H)
 
-            # Forward pass for all agents at once
-            q_values, _ = self.q_network(obs_stacked, init_hidden)
-            # q_values[0]: (ep_len*num_agents, 1, 5), q_values[1]: (ep_len*num_agents, 1, 10)
+            # Forward pass: online net on obs sequence — get Q(s_t, a)
+            online_movement_seq, online_comm_seq = self._forward_seq(self.q_network, obs_seq, h0)
+            # Shapes: (N, T, 5), (N, T, 10). Permute back to (T, N, ·).
+            online_mov_q = online_movement_seq.permute(1, 0, 2)
+            online_com_q = online_comm_seq.permute(1, 0, 2)
 
-            # Reshape back: (ep_len*num_agents, 1, action_dim) -> (ep_len, num_agents, action_dim)
-            movement_q_values = q_values[0].squeeze(1).reshape(ep_len, num_agents, -1)
-            comm_q_values = q_values[1].squeeze(1).reshape(ep_len, num_agents, -1)
-            # (ep_len, num_agents, 1)
-            movement_actions = (actions[:, :, 0]).unsqueeze(-1)
-            # (ep_len, num_agents, 1)
-            comm_actions = (actions[:, :, 1]).unsqueeze(-1)
-            # (ep_len, num_agents, 1)
-            movement_q_values = torch.gather(movement_q_values, dim=2, index=movement_actions)
-            # (ep_len, num_agents, 1)
-            comm_q_values = torch.gather(comm_q_values, dim=2, index=comm_actions)
-            # compute target q-values
+            # Q for actions actually taken
+            mov_a = actions[:, :, 0].unsqueeze(-1)     # (T, N, 1)
+            com_a = actions[:, :, 1].unsqueeze(-1)
+            chosen_mov_q = online_mov_q.gather(2, mov_a)   # (T, N, 1)
+            chosen_com_q = online_com_q.gather(2, com_a)
+
+            # Targets: forward both networks on next_obs sequence (no grad)
             with torch.no_grad():
-                # Double Q-Learning: use Q-network to select actions, target network to evaluate
-                next_q_values, _ = self.q_network(next_obs_stacked, init_hidden)
-                target_q_values, _ = self.target_network(next_obs_stacked, init_hidden)
+                online_mov_next, online_com_next = self._forward_seq(self.q_network, next_obs_seq, h0)
+                target_mov_next, target_com_next = self._forward_seq(self.target_network, next_obs_seq, h0)
 
-                # Reshape: (ep_len*num_agents, 1, action_dim) -> (ep_len, num_agents, action_dim)
-                movement_next_q_values = next_q_values[0].squeeze(1).reshape(ep_len, num_agents, -1)
-                comm_next_q_values = next_q_values[1].squeeze(1).reshape(ep_len, num_agents, -1)
-                movement_target_q_values = target_q_values[0].squeeze(1).reshape(ep_len, num_agents, -1)
-                comm_target_q_values = target_q_values[1].squeeze(1).reshape(ep_len, num_agents, -1)
+                # Permute back to (T, N, ·)
+                online_mov_next = online_mov_next.permute(1, 0, 2)
+                online_com_next = online_com_next.permute(1, 0, 2)
+                target_mov_next = target_mov_next.permute(1, 0, 2)
+                target_com_next = target_com_next.permute(1, 0, 2)
 
-                # Select best actions from Q-network
-                best_movement_actions = torch.argmax(movement_next_q_values, dim=2).unsqueeze(-1)
-                best_comm_actions = torch.argmax(comm_next_q_values, dim=2).unsqueeze(-1)
-                # (ep_len, num_agents, 1)
-                target_movement_q_values = torch.gather(movement_target_q_values, dim=2, index=best_movement_actions)
-                target_movement_q_values = target_movement_q_values * (1 - dones)
-                # (ep_len, num_agents, 1)
-                target_comm_q_values = torch.gather(comm_target_q_values, dim=2, index=best_comm_actions)
-                target_comm_q_values = target_comm_q_values * (1 - dones)
-            # compute TD-error/loss (MSE)
-            episode_loss = torch.nn.functional.mse_loss(movement_q_values, rewards + self.gamma * target_movement_q_values) + \
-                torch.nn.functional.mse_loss(comm_q_values, rewards + self.gamma * target_comm_q_values)
-            total_loss += episode_loss
+                # Double-Q: argmax via online, evaluate via target
+                best_mov = online_mov_next.argmax(dim=2, keepdim=True)
+                best_com = online_com_next.argmax(dim=2, keepdim=True)
+                tgt_mov_q = target_mov_next.gather(2, best_mov)   # (T, N, 1)
+                tgt_com_q = target_com_next.gather(2, best_com)
 
-        # backprop and update Q-network
+                # Mask ONLY on true termination (not truncation)
+                not_terminal = (1.0 - terminated).unsqueeze(-1)   # (T, N, 1)
+                tgt_mov_q = tgt_mov_q * not_terminal
+                tgt_com_q = tgt_com_q * not_terminal
+
+                rewards_t = rewards.unsqueeze(-1)                 # (T, N, 1)
+                target_mov_full = rewards_t + self.gamma * tgt_mov_q
+                target_com_full = rewards_t + self.gamma * tgt_com_q
+
+            ep_loss = torch.nn.functional.mse_loss(chosen_mov_q, target_mov_full) + \
+                      torch.nn.functional.mse_loss(chosen_com_q, target_com_full)
+            total_loss += ep_loss
+            last_mov_q, last_com_q = chosen_mov_q, chosen_com_q
+
+        # Mean across episodes, not sum — otherwise effective lr scales with batch_size.
+        loss = total_loss / len(batch)
         self.optimizer.zero_grad()
-        total_loss.backward()
+        loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=10.0)
         self.optimizer.step()
 
-        # Compute mean Q-values for logging (from last episode in batch)
-        mean_q = (movement_q_values.mean() + comm_q_values.mean()).item() / 2
+        mean_q = (last_mov_q.mean() + last_com_q.mean()).item() / 2
+        return loss.item(), grad_norm.item(), mean_q
 
-        return total_loss.item() / len(batch), grad_norm.item(), mean_q
+    @staticmethod
+    def _forward_seq(net, obs_seq, h0):
+        """Run the QNetwork over a full sequence. obs_seq: (N, T, obs_dim).
+
+        Returns per-head Q at every timestep, shape (N, T, action_dim).
+        This relies on the GRU processing the full sequence at once and
+        applying the Q-heads to every step (not just the last).
+        """
+        # GRU forward over the whole sequence
+        gru_out, _ = net.rnn(obs_seq, h0)               # (N, T, H)
+        # Apply each Q-head at every timestep
+        q_heads = [head(gru_out) for head in net.q_heads]  # each (N, T, A_i)
+        return q_heads[0], q_heads[1]
 
     def update_target_network(self):
         self.target_network.load_state_dict(self.q_network.state_dict())
