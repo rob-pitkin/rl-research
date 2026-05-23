@@ -325,6 +325,14 @@ If recursive LMs can help with credit assignment over episodes (current project)
 
 ---
 
+### 13. Efficient and portable MCTS implementation in C++
+**Idea** Create an MCTS implementation library that is in C++ with Python bindings, use openspiel as inspiration
+
+### 14. PPO.cpp (like llama.cpp)
+**Idea** Implementing PPO from scratch in a single file for practice, in C++, and for efficiency.
+
+### 15. Get better at Helix, use Obsidian to create a knowledge base for the above two ideas
+
 ## Parked Ideas
 <!-- Interesting but not feasible right now or deprioritized -->
 

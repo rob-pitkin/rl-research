@@ -175,3 +175,26 @@ cython_debug/
 
 # third-party/
 comm-vs-ctde/wandb
+
+# macOS Finder noise
+.DS_Store
+
+# Editor / IDE / tool state
+.vscode/
+.idea/
+.claude/
+.antigravitycli/
+
+# Sibling repos and external knowledge — separately versioned or not tracked here
+cpp-mpe2/
+third-party/
+rl-knowledge/
+papers/
+
+# Per-project wandb output (catch any future subprojects, not just comm-vs-ctde)
+**/wandb/
+
+# Per-project run logs and figure outputs
+**/logs/
+**/results/
+comm-vs-ctde/analysis/figures/
