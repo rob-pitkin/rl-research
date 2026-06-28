@@ -1,0 +1,117 @@
+---
+title: VBC — Variance Based Control for Efficient Communication (research note)
+description: "Provisional analysis of VBC: hybrid QMIX + selective communication under bandwidth constraints; communication beats state-only."
+type: research-note
+status: provisional
+sources:
+  - external-sources/vbc.mdx
+created: 2026-04-08
+tags:
+  - research
+  - provisional
+  - marl
+  - communication
+  - value-decomposition
+  - bandwidth-constraints
+  - hybrid
+  - ctde
+---
+## Question
+
+Does communication add value *beyond* QMIX's global-state coordination, and how does VBC's variance-based bandwidth control achieve efficient hybrid value-decomposition + communication? This is the central question of the comm-vs-ctde project.
+
+## Sources cited
+
+- [VBC — Efficient Communication in MARL via Variance Based Control](../external-sources/vbc.mdx) (Zhang, Zhang, Lin; Harvard / Amazon / Toronto; NeurIPS 2019)
+
+## Findings
+
+### Summary
+
+VBC is a **hybrid approach** combining QMIX-style value decomposition with learned communication, introducing **bandwidth constraints** via variance control. By penalizing the variance of exchanged messages during training and using confidence-based selective communication at execution, VBC achieves **2–10× lower communication overhead** than full communication while **matching or improving** over pure value decomposition.
+
+**Paradigm**: CTDE + selective runtime communication.
+
+> [!IMPORTANT]
+> VBC is the key result for comm-vs-ctde: **global state during training is NOT sufficient for all coordination.** VBC+QMIX beats QMIX by ~20% win rate on SMAC — communication adds value even when the centralized mixer already has full state.
+
+### Key Contributions
+
+1. **Hybrid architecture** — first to explicitly combine value decomposition (VDN/QMIX) with learned communication. Local action generator produces Q_i from local obs; message encoders process others' messages; combiner aggregates by elementwise sum; mixing network produces Q_tot.
+2. **Variance-based message control** — loss `L = Σ (y_tot - Q_tot)² + λ Σ Var(f_enc(c_i))` penalizes high-variance (noisy) messages. Convergence guarantee `||Q_tot - Q*_tot|| ≤ λNG`.
+3. **Confidence-based selective communication** — send a request only when the local decision is ambiguous (top-2 Q-gap < δ₁); reply only when the message is informative (Var ≥ δ₂). No extra scheduler module (unlike SchedNet/ATOC).
+4. **Strong SMAC results** — ~20% higher win rates and 2–10× lower overhead; emergent strategies (defensive lines, kiting, sacrificial decoys).
+
+### Architecture
+
+- **Local action generator**: GRU(64) processes obs+history → intermediate `c_i^t` (sent AND used locally) → Q_i.
+- **Message encoder** (shared params): `c_j^t → FC(196) → LeakyReLU → FC(64)`; output dim matches Q_i for simple summation.
+- **Combiner**: `Q_i(o_t,h_{t-1},.) = Q_i(o_i,h_i,.) + Σ_{j≠i} f_enc(c_j^t)` (no extra params).
+- **Mixing network** (training only): VBC+VDN (sum) or VBC+QMIX (monotonic hypernetwork mixing on global state).
+
+**Communication as correction**: local Q-values are the baseline; messages refine only when needed. Confident local decision → low message variance → no communication.
+
+### Communication Overhead
+
+Overhead metric β = (Σ g_t)/(RT), where g_t = communicating pairs, R = N(N−1).
+
+```html preview
+<div style="font-family:system-ui;padding:16px;color:var(--foreground)">
+  <h4 style="margin:0 0 12px">Communication overhead on SMAC (lower is better)</h4>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px"><span>VBC (adaptive)</span><span>4–36%</span></div>
+      <div style="background:var(--muted);border-radius:var(--radius);overflow:hidden;height:22px"><div style="width:36%;height:100%;background:var(--chart-1);border-radius:var(--radius)"></div></div>
+    </div>
+    <div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px"><span>SchedNet (fixed K)</span><span>33–67%</span></div>
+      <div style="background:var(--muted);border-radius:var(--radius);overflow:hidden;height:22px"><div style="width:67%;height:100%;background:var(--chart-3);border-radius:var(--radius)"></div></div>
+    </div>
+    <div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px"><span>Full Communication</span><span>100%</span></div>
+      <div style="background:var(--muted);border-radius:var(--radius);overflow:hidden;height:22px"><div style="width:100%;height:100%;background:var(--chart-5);border-radius:var(--radius)"></div></div>
+    </div>
+  </div>
+  <p style="font-size:12px;color:var(--muted-foreground);margin:12px 0 0">VBC reaches FC-level performance at a fraction of the bandwidth: 10× reduction on easy tasks (MMM, 2s3z), 2–6× on hard tasks (3s5z, 6h_vs_8z).</p>
+</div>
+```
+
+**Temporal pattern**: high communication at episode start (establish formations/roles), low mid-episode (execute plan), spikes when an agent dies and formation breaks. VBC learns to communicate **only when necessary**.
+
+### Experimental Results (SMAC)
+
+Tasks: symmetric (2s3z, 3s5z, MMM) and asymmetric (3s_vs_4z, 6h_vs_8z, 6z_vs_24zerg — hardest).
+
+1. **Communication helps**: VBC, SchedNet, FC >> QMIX, VDN on all tasks.
+2. **VBC matches/exceeds FC**: on 2s3z, 6h_vs_8z, 6z_vs_24zerg VBC > FC (filtering noise helps); elsewhere VBC ≈ FC with 2–10× less communication.
+3. **VBC beats SchedNet**: adaptive > fixed scheduling.
+4. **Hybrid > pure QMIX**: state mixing + communication > state alone.
+
+**Emergent strategies**: 6h_vs_8z — defensive line at map edge; 3s_vs_4z — healthy Stalkers shield firing Stalkers (kiting); 6z_vs_24zerg — two-phase decoy/split (QMIX 0% win rate here).
+
+### Comparison Table
+
+| Aspect | QMIX | CommNet | SchedNet | VBC |
+|--------|------|---------|----------|-----|
+| **Communication** | None | Always (100%) | Fixed K/timestep | Selective (4–36%) |
+| **Coordination** | State hypernetworks | Broadcast + mean pool | Scheduled broadcast | State mixing + messages |
+| **Training** | Off-policy Q | Policy gradient | Off-policy | Off-policy Q (QMIX) |
+| **Bandwidth control** | n/a | None | Scheduler | Variance penalty + thresholds |
+| **Extra module** | No | No | Yes (scheduler) | No |
+
+### Connections
+
+- **Foundation**: [QMIX](./qmix.md) (mixing network) and [VDN](./vdn.md) (simpler additive option) — VBC+QMIX > VBC+VDN > pure methods.
+- **Communication baseline**: [CommNet](./commnet.md) — VBC is essentially the selective, off-policy, value-decomposed evolution of CommNet's idea.
+- **Survey placement**: [MARL communication survey](./marl-communication-survey.md) — VBC as an early hybrid (bandwidth-limited, value-level integration, differentiable + regularized).
+- **Related bandwidth methods (not yet indexed)**: TMC, MAIC, NDQ.
+
+## Open questions
+
+- Thresholds (δ₁, δ₂) and λ are task-dependent with no universal defaults — require coarse-then-fine search.
+- Convergence bound trades optimality for efficiency (error ∝ λ).
+- Tested only on SMAC; generalization to other domains open.
+
+### Relevance to comm-vs-ctde project
+
+VBC is arguably the **single most important** indexed paper for this project: it *is* the QMIX+communication hybrid the project explores, and it provides the headline evidence that **communication adds value beyond global state** (+20% win rate, VBC+QMIX > QMIX). Open contributions: information-theoretic analysis of *what* the messages carry that the state mixer misses; whether the variance penalty is the best bandwidth mechanism; and how the communication-vs-state tradeoff shifts as partial observability increases.
